@@ -366,6 +366,15 @@ corr_mot_DV<- subset(quant_data, select = c(basic_needs_T1, basic_needs_T2, basi
                                             controlled_mot_T1,controlled_mot_T2,controlled_mot_T3,
                                             autonomous_mot_T1,autonomous_mot_T2,autonomous_mot_T3, study_points, grades))
 
+corr_reg<- subset(quant_data, select = c(amotivation_T1,amotivation_T2,amotivation_T3,
+                                            external_reg_T1,external_reg_T2,external_reg_T3,
+                                            introjected_reg_T1,introjected_reg_T2,introjected_reg_T3,
+                                            identified_reg_T1,identified_reg_T2,identified_reg_T3,
+                                            integrated_reg_T1,integrated_reg_T2,integrated_reg_T3,
+                                            intrinsic_mot_T1,intrinsic_mot_T2,intrinsic_mot_T3))
+
+cor.plot(corr_reg, stars = T, upper = F)
+
 descriptives_mainvariables <- dfSummary(main_variables, round.digits = 2)
 view(descriptives_mainvariables)
 
@@ -452,6 +461,121 @@ Missingsummary<- dfSummary(main_variables, round.digits = 2)
 
 view(Missingsummary)
 
+#---Power analysis####
+library(pwrss)
+
+#-Grades
+library(sandwich)
+library(lmtest)
+
+set.seed(123)
+
+# 1. Pre-scale variables (center only, no scaling of SD)
+quant_data_long2$Amotivation_c <- scale(quant_data_long2$Amotivation, scale = FALSE)
+quant_data_long2$Controlled_motivation_c <- scale(quant_data_long2$Controlled_motivation, scale = FALSE)
+quant_data_long2$Autonomous_motivation_c <- scale(quant_data_long2$Autonomous_motivation, scale = FALSE)
+quant_data_long2$HS_average_c <- scale(quant_data_long2$HS_average, scale = FALSE)
+
+# 2. Fit model using the centered variables
+Gradesreg <- lm(
+  grades ~ Amotivation_c + Controlled_motivation_c + Autonomous_motivation_c + gender + HS_average_c,
+  data = quant_data_long2
+)
+
+# 3. Extract data actually used in the model
+model_data <- model.frame(Gradesreg)
+cluster_id <- model_data$ID
+
+# 4. Fitted values and residual SD
+fitted_vals <- fitted(Gradesreg)
+resid_sd <- sigma(Gradesreg)
+
+# 5. Simulation settings
+n_sim <- 5000
+p_values <- matrix(NA, nrow = n_sim, ncol = length(coef(Gradesreg)) - 1)
+colnames(p_values) <- names(coef(Gradesreg))[-1]
+
+# 6. Monte Carlo loop
+for (i in 1:n_sim) {
+  # Simulate new outcome
+  sim_outcome <- fitted_vals + rnorm(nrow(model_data), mean = 0, sd = resid_sd)
+  
+  # Replace outcome
+  sim_data <- model_data
+  sim_data$grades <- sim_outcome
+  
+  # Refit model
+  sim_model <- lm(
+    grades ~ Amotivation_c + Controlled_motivation_c + Autonomous_motivation_c + gender + HS_average_c,
+    data = sim_data
+  )
+  
+  # Cluster-robust SEs
+  sim_crse <- coeftest(sim_model, vcov. = vcovHC(sim_model, type = "HC0", cluster = cluster_id))
+  
+  # Save p-values (skip intercept)
+  p_values[i, ] <- sim_crse[-1, 4]
+}
+
+# 7. Calculate post hoc power
+posthoc_power <- colMeans(p_values < 0.05)
+
+# 8. Optional: 95% CI for power estimates
+power_ci <- t(apply(p_values, 2, function(p) {
+  phat <- mean(p < 0.05)
+  se <- sqrt(phat * (1 - phat) / n_sim)
+  ci <- phat + c(-1.96, 1.96) * se
+  return(ci)
+}))
+colnames(power_ci) <- c("Lower_95CI", "Upper_95CI")
+
+# 9. Combine results
+results <- data.frame(
+  Predictor = names(posthoc_power),
+  Power = posthoc_power,
+  Lower_95CI = power_ci[, 1],
+  Upper_95CI = power_ci[, 2]
+)
+
+print(results)
+
+#Dropout
+set.seed(123)
+
+# Extract the actual data used in the model
+model_data <- model.frame(logreg_semreg)
+
+n_sim <- 5000
+p_values <- matrix(NA, nrow = n_sim, ncol = length(coef(logreg_semreg)) - 1)
+colnames(p_values) <- names(coef(logreg_semreg))[-1]
+
+for (i in 1:n_sim) {
+  # Fitted probabilities from the model
+  fitted_probs <- predict(logreg_semreg, type = "response")
+  
+  # Simulate new outcome
+  simulated_outcome <- rbinom(n = nrow(model_data), size = 1, prob = fitted_probs)
+  
+  # Replace outcome in the model data
+  sim_data <- model_data
+  sim_data$semester_reg <- simulated_outcome
+  
+  # Refit model
+  sim_model <- glm(
+    semester_reg ~ Amotivation + Controlled_motivation + Autonomous_motivation + gender,
+    family = binomial(link = "logit"),
+    data = sim_data
+  )
+  
+  # Save p-values
+  p_values[i, ] <- summary(sim_model)$coefficients[-1, 4]
+}
+
+# Calculate post hoc power
+posthoc_power <- colMeans(p_values < 0.05)
+posthoc_power
+
+
 #---Correlational analyses#### 
 #4) Psychological need satisfaction will positively correlate with autonomous motivation, and negatively with controlled motivation and amotivation
 
@@ -506,7 +630,7 @@ table(quant_data_long2$study_year)
 
 quant_data_long2$faculty <- factor(quant_data_long2$faculty, labels = c("HF", "MN")) #0=HF, 1=MN
 quant_data_long2$gender <- factor(quant_data_long2$gender, labels = c("females", "males")) #0=female, 1=male
-quant_data_long2$study_year <-  factor(quant_data_long2$study_year, labels = c("first_year", "second_year","fourth_year")) #0=fist year, 1=second year, 2=fourth year
+quant_data_long2$study_year <- factor(quant_data_long2$study_year, labels = c("first_year", "second_year","fourth_year")) #0=fist year, 1=second year, 2=fourth year
 
 table(quant_data_long2$faculty)
 table(quant_data_long2$gender)
@@ -540,12 +664,16 @@ ggsave(filename="quant_fig_Autonomous_motivation.jpg", width=36, height=22, unit
 
 #-Study year
 quant_data_long2 %>% 
-  ggplot(aes(Timepoints, Autonomous_motivation, group=study_year, fill=study_year))  + 
-  stat_summary(fun.data = mean_se, geom="ribbon", alpha=.1) +
-  stat_summary(fun.y = mean, geom="line") + 
-  labs(x="Time interval", y = "Autonomous motivation", 
-       title="Autonomous motivation across semesters as a function of Study year",
-       subtitle = "Mean +/- 1 Standard Error", color="Study year", fill="Study year")
+  ggplot(aes(x = Timepoints, y = Autonomous_motivation, group = study_year, fill = study_year, linetype = study_year)) + 
+  stat_summary(fun.data = mean_se, geom = "ribbon", alpha = .1) +
+  stat_summary(fun = mean, geom = "line") +
+  labs(x = "Time interval", 
+             y = "Autonomous motivation", 
+             title = "Autonomous motivation across semesters as a function of Study year",
+             subtitle = "Mean +/- 1 Standard Error", 
+             color = "Study year", 
+             fill = "Study year", 
+             linetype = "Study year")
 ggsave(filename="quant_fig_Autonomous_motivation_studyyear.jpg", width=36, height=22, units="cm", dpi=200)
 
 #-Adding predictors random intercept
@@ -595,6 +723,11 @@ modelsummary(list("Null model"=null_model_Autonomous_motivation,"Random intercep
                   "Random intercept and randome slope"=autmot_model3 ), stars = TRUE, gof_omit = 'RMSE|BIC|Obs',
              notes = "Standard errors within parentheses", output = 'Autmixed.docx') 
 
+autmot_model3_report<- report(autmot_model3)
+autmot_model3_report
+as.data.frame(autmot_model3_report)
+coef(autmot_model3_report)
+
 #-------Grades####
 
 #ICC check Grades #97%
@@ -627,6 +760,7 @@ logLik(Gradesreg_crse)
 AIC(Gradesreg_crse)
 BIC(Gradesreg_crse)
 performance(Gradesreg_crse)
+r2(Gradesreg_crse)
 
 #-------Dropout####
 
@@ -698,17 +832,61 @@ exp(confint(logreg_semreg))
 logreg_semreg_report <- report(logreg_semreg)
 logreg_semreg_report
 as.data.frame(logreg_semreg_report)
+check_model(logreg_semreg)
+model_performance(logreg_semreg)
+performance_roc(logreg_semreg)
+r2(logreg_semreg)
 
 #Preudo R2 of the model
 pR2(logreg_semreg)["McFadden"] 
 pR2(logreg_semreg) #McFadden= 0.256, Cox & Snell= 0.101, Nagelkerke= 0.297
 
 #-------Path analysis grades####
-
 library(lavaan)
 library(semPlot)
 library(parameters)
 #5) Psychological need satisfaction will mediate the effects of motivation on grades and dropout across time.
+
+#--Measurement invariance basic needs
+model_BPN_invariance <-'
+BNP_T1 ~ aut_T1 + comp_T1 + rel_T1 
+BNP_T2 ~ aut_T2 + comp_T2 + rel_T2 
+BNP_T3 ~ aut_T3 + comp_T3 + rel_T3 
+'
+
+
+
+#--Measurement invariance general model
+model_grades_invariance <-'
+Basic_needs ~ a*Amotivation + b*Controlled_motivation + c*Autonomous_motivation 
+grades ~ d*Basic_needs
+
+# Mediators
+indirect1:= a*d 
+indirect2:= b*d
+indirect3:= c*d
+
+'
+
+# 1. Configural invariance
+fit_configural_grades <- sem(model_grades_invariance, data = quant_data_long2, group = "Timepoints", missing="FIML")  
+summary(fit_configural_grades, fit.measures = TRUE)
+
+# 2. Metric invariance
+fit_metric_grades <- sem(model_grades_invariance, data = quant_data_long2, group = "Timepoints", group.equal = c("loadings"),missing="FIML")
+summary(fit_metric_grades, fit.measures = TRUE)
+
+# 3. Scalar invariance
+fit_scalar_grades <- sem(model_grades_invariance, data = quant_data_long2, group = "Timepoints", group.equal = c("loadings", "intercepts"),missing="FIML")
+summary(fit_scalar_grades, fit.measures = TRUE)
+
+# Compare models
+anova(fit_configural_grades, fit_metric_grades)  # Compare configural og metric
+anova(fit_metric_grades, fit_scalar)      # Compare metric og scalar
+anova(fit_configural_grades, fit_scalar_grades)      # Compare configural og scalar
+
+
+#--Structural path model
 
 model_grades1 <- '
   # Define latent variables
@@ -785,8 +963,36 @@ lavTestLRT(fit_model_grades1, fit_model_grades2, type = "Chisq", model.names = N
 
 cbind(model1=inspect(fit_model_grades1, 'fit.measures'), model2=inspect(fit_model_grades2, 'fit.measures')) #Compare fit measures 
 
-
 #-------Path analysis semester registration####
+
+#--Measurement invariance general model
+model_semreg_invariance <-'
+Basic_needs ~ a*Amotivation + b*Controlled_motivation + c*Autonomous_motivation 
+semester_reg ~ d*Basic_needs
+
+# Mediators
+indirect1:= a*d 
+indirect2:= b*d
+indirect3:= c*d
+
+'
+
+# 1. Configural invariance
+fit_configural_semreg <- sem(model_semreg_invariance, data = quant_data_long2, group = "Timepoints", missing="FIML")  
+summary(fit_configural_semreg, fit.measures = TRUE)
+
+# 2. Metric invariance
+fit_metric_semreg <- sem(model_semreg_invariance, data = quant_data_long2, group = "Timepoints", group.equal = c("loadings"),missing="FIML")
+summary(fit_metric_semreg, fit.measures = TRUE)
+
+# 3. Scalar invariance
+fit_scalar_semreg <- sem(model_semreg_invariance, data = quant_data_long2, group = "Timepoints", group.equal = c("loadings", "intercepts"),missing="FIML")
+summary(fit_scalar_semreg, fit.measures = TRUE)
+
+# Compare modellene
+anova(fit_configural_semreg, fit_metric_semreg)  # Compare configural og metric
+anova(fit_metric_semreg, fit_scalar_semreg)      # Compare metric og scalar
+anova(fit_configural_semreg, fit_scalar_semreg)      # Compare configural og scalar
 
 model_semreg1 <- '
   # Define latent variables
@@ -862,7 +1068,36 @@ fitMeasures(fit_model_model_semreg2)
 #Comparing models
 cbind(model1=inspect(fit_model_model_semreg1, 'fit.measures'), model2=inspect(fit_model_model_semreg2, 'fit.measures')) #Compare fit measures 
 
-#-------Path analysis study points#### 
+#-------Path analysis study credits#### 
+#--Measurement invariance general model
+model_studycredits_invariance <-'
+Basic_needs ~ a*Amotivation + b*Controlled_motivation + c*Autonomous_motivation 
+study_points ~ d*Basic_needs
+
+# Mediators
+indirect1:= a*d 
+indirect2:= b*d
+indirect3:= c*d
+
+'
+
+# 1. Configural invariance
+fit_configural_studycredits <- sem(model_studycredits_invariance, data = quant_data_long2, group = "Timepoints", missing="FIML")  
+summary(fit_configural_semreg, fit.measures = TRUE)
+
+# 2. Metric invariance
+fit_metric_studycredits <- sem(model_studycredits_invariance, data = quant_data_long2, group = "Timepoints", group.equal = c("loadings"),missing="FIML")
+summary(fit_metric_studycredits, fit.measures = TRUE)
+
+# 3. Scalar invariance
+fit_scalar_studycredits <- sem(model_studycredits_invariance, data = quant_data_long2, group = "Timepoints", group.equal = c("loadings", "intercepts"),missing="FIML")
+summary(fit_scalar_studycredits, fit.measures = TRUE)
+
+# Compare models
+anova(fit_configural_studycredits, fit_metric_studycredits)  # Compare configural og metric
+anova(fit_metric_studycredits, fit_scalar_studycredits)      # Compare metric og scalar
+anova(fit_configural_studycredits, fit_scalar_studycredits)      # Compare configural og scalar
+
 model_studypoints1 <- '
   # Define latent variables
   basic_needs =~ basic_needs_T1 + basic_needs_T2 + basic_needs_T3
